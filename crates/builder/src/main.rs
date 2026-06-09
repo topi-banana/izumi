@@ -14,16 +14,16 @@ use serde::Serialize;
 mod mixins;
 use mixins::{MinecraftServerMixin, MixinClass};
 
-pub const MIXIN_PACKAGE: &str = "com.example.mixin";
-pub const MIXIN_PACKAGE_INTERNAL: &str = "com/example/mixin";
-pub const NATIVE_LOADER_INTERNAL: &str = "com/example/runtime/NativeLoader";
+pub const MIXIN_PACKAGE: &str = "com.izumi.mixin";
+pub const MIXIN_PACKAGE_INTERNAL: &str = "com/izumi/mixin";
+pub const NATIVE_LOADER_INTERNAL: &str = "com/izumi/runtime/NativeLoader";
 // JNI 静的バインディングの対象 holder クラス。Mixin に native メソッドを
 // 置くと Mixin プロセッサがターゲットクラスにマージしてしまうため (結果
 // として `Java_net_minecraft_server_MinecraftServer_<fn>` を JVM が探して
 // UnsatisfiedLinkError)、 別の通常 Java クラスに集約する。inject-macro 側
-// `JNI_NATIVE_OWNER` ("com_example_runtime_NativePayloads") と必ず同期。
-pub const NATIVE_PAYLOADS_OWNER: &str = "com/example/runtime/NativePayloads";
-const MOD_ID: &str = "hello-native-mod";
+// `JNI_NATIVE_OWNER` ("com_izumi_runtime_NativePayloads") と必ず同期。
+pub const NATIVE_PAYLOADS_OWNER: &str = "com/izumi/runtime/NativePayloads";
+const MOD_ID: &str = "izumi";
 const NATIVES_PACKAGE: &str = "native-payloads";
 const NATIVE_LIB_DIRS_ENV: &str = "NATIVE_LIB_DIRS";
 
@@ -255,7 +255,7 @@ fn fabric_mod_descriptor() -> FabricMod {
         schema_version: 1,
         id: MOD_ID.into(),
         version: "0.1.0".into(),
-        name: "Hello Native Mod".into(),
+        name: "Izumi".into(),
         description: "Calls native payloads via JNI to print strings at server start.".into(),
         environment: "*".into(),
         license: "MIT".into(),
@@ -320,9 +320,9 @@ fn build_mixin_class_for(m: &dyn MixinClass) -> crustf::Result<(String, Vec<u8>)
 /// Holder class for all native methods. Mixin classes themselves cannot host
 /// `native` declarations because the Mixin processor merges them into the
 /// target class (then JVM looks up `Java_<target>_<fn>` and crashes with
-/// `UnsatisfiedLinkError`). A plain class outside the `com.example.mixin`
+/// `UnsatisfiedLinkError`). A plain class outside the `com.izumi.mixin`
 /// package is invisible to the Mixin processor, so symbols stay bound to
-/// `Java_com_example_runtime_NativePayloads_<fn>` as the JNI spec expects.
+/// `Java_com_izumi_runtime_NativePayloads_<fn>` as the JNI spec expects.
 fn build_native_payloads_class(mixins: &[&dyn MixinClass]) -> crustf::Result<Vec<u8>> {
     let mut builder = ClassFileBuilder::new(NATIVE_PAYLOADS_OWNER).method(
         MethodBuilder::new("<init>", "()V")

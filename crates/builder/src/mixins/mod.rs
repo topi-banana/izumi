@@ -73,7 +73,7 @@ impl JavaType {
     }
 }
 
-/// `com.example.runtime.NativePayloads` に置く 1 個の native static method。
+/// `com.izumi.runtime.NativePayloads` に置く 1 個の native static method。
 pub struct NativeMethod {
     pub name: String,
     pub descriptor: String,

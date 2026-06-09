@@ -1,8 +1,8 @@
-# rust_minecraft_mod_example
+# izumi
 
 [日本語版 README](./README_jp.md)
 
-[![CI](https://github.com/topi-banana/rust_minecraft_mod_example/actions/workflows/ci.yml/badge.svg)](https://github.com/topi-banana/rust_minecraft_mod_example/actions/workflows/ci.yml)
+[![CI](https://github.com/topi-banana/izumi/actions/workflows/ci.yml/badge.svg)](https://github.com/topi-banana/izumi/actions/workflows/ci.yml)
 
 A Fabric Minecraft mod toolchain that builds `.class` files and the mod
 jar entirely from Rust — no Java toolchain, no Gradle, no Mixin Gradle
@@ -32,19 +32,19 @@ native-payloads/examples/minecraft_server.rs           builder/src/mixins/minecr
                        ▼                                              ▼
    target/release/examples/libminecraft_server.{so,dll,dylib}   cargo run -p builder
      └── exported JNI symbol                                          │
-         Java_com_example_runtime_NativePayloads_hello                ▼
-                                                       out/hello-native-mod.jar
+         Java_com_izumi_runtime_NativePayloads_hello                ▼
+                                                       out/izumi.jar
                                                          ├─ fabric.mod.json
-                                                         ├─ hello-native-mod.mixins.json
-                                                         ├─ com/example/mixin/MinecraftServerMixin.class
-                                                         ├─ com/example/runtime/NativePayloads.class
-                                                         ├─ com/example/runtime/NativeLoader.class
+                                                         ├─ izumi.mixins.json
+                                                         ├─ com/izumi/mixin/MinecraftServerMixin.class
+                                                         ├─ com/izumi/runtime/NativePayloads.class
+                                                         ├─ com/izumi/runtime/NativeLoader.class
                                                          └─ native/<platform>/<libname>
 ```
 
 1. The `#[inject]` proc macro is intentionally tiny: it wraps each
    annotated Rust function in a JNI shim exported as
-   `Java_com_example_runtime_NativePayloads_<jni_escaped_fn>`. Nothing
+   `Java_com_izumi_runtime_NativePayloads_<jni_escaped_fn>`. Nothing
    else is embedded in the cdylib.
 2. `builder/src/main.rs` keeps a compile-time list:
    ```rust
@@ -55,13 +55,13 @@ native-payloads/examples/minecraft_server.rs           builder/src/mixins/minecr
    native methods to expose on the shared holder, and the `@Inject`
    handlers (with their bytecode). The builder iterates the list and
    emits:
-   - `com/example/mixin/<MixinName>.class` per mixin.
-   - `com/example/runtime/NativePayloads.class` — a plain (non-mixin)
+   - `com/izumi/mixin/<MixinName>.class` per mixin.
+   - `com/izumi/runtime/NativePayloads.class` — a plain (non-mixin)
      class hosting every `native static String <fn>()` declaration.
      Mixins themselves can't host native methods because the Mixin
      processor would merge them into the target class and break JNI
      static binding.
-   - `com/example/runtime/NativeLoader.class` — one
+   - `com/izumi/runtime/NativeLoader.class` — one
      `ensure_<lib>()V` synchronized method and `loaded_<lib>: Z` flag
      per cdylib, sharing a `resourcePath(String libBasename)` helper
      that resolves the in-jar path based on `os.name` / `os.arch`.
@@ -88,7 +88,7 @@ cargo run -p builder
 ```
 
 The builder invokes `cargo build -p native-payloads --release --examples`
-itself, then packages everything into `out/hello-native-mod.jar`. Drop
+itself, then packages everything into `out/izumi.jar`. Drop
 the jar into `<minecraft>/mods/` next to a Fabric Loader install; on
 server start the Mixin runs at `MinecraftServer#runServer @At("HEAD")`
 and you see `Hello from native!` in the log.
@@ -210,7 +210,7 @@ and RETURN of `runServer`) as a demo.
 
 `#[inject_macro::inject]` takes no arguments. It emits a JNI wrapper
 exported under
-`Java_com_example_runtime_NativePayloads_<jni_escaped_fn_name>` so the
+`Java_com_izumi_runtime_NativePayloads_<jni_escaped_fn_name>` so the
 JVM binds the corresponding `native static String <fn>()` declaration
 on `NativePayloads` automatically once `System.load` has run.
 

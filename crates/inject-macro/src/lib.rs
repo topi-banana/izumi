@@ -7,10 +7,10 @@ use syn::{FnArg, ItemFn, PatType, Type, parse_macro_input};
 // JNI 関数名の owner prefix (`package_class` を JNI 規約で `_` 連結したもの)。
 // Mixin クラスに直接 native メソッドを置くと Mixin プロセッサがターゲット
 // クラスへマージしてしまい JNI 静的バインディングが破綻するので、 別途
-// `com.example.runtime.NativePayloads` という holder クラスに集約する。
-// builder 側 `NATIVE_PAYLOADS_OWNER` ("com/example/runtime/NativePayloads")
+// `com.izumi.runtime.NativePayloads` という holder クラスに集約する。
+// builder 側 `NATIVE_PAYLOADS_OWNER` ("com/izumi/runtime/NativePayloads")
 // と必ず同期させること。
-const JNI_NATIVE_OWNER: &str = "com_example_runtime_NativePayloads";
+const JNI_NATIVE_OWNER: &str = "com_izumi_runtime_NativePayloads";
 
 /// JNI shortened name escape per JNI Specification §13.2:
 /// `_` → `_1`, `;` → `_2`, `[` → `_3`, `/` and `.` → `_`,
@@ -165,8 +165,8 @@ mod tests {
 
     #[test]
     fn jni_escape_slash_and_dot_to_underscore() {
-        assert_eq!(jni_escape("com/example"), "com_example");
-        assert_eq!(jni_escape("com.example"), "com_example");
+        assert_eq!(jni_escape("com/izumi"), "com_izumi");
+        assert_eq!(jni_escape("com.izumi"), "com_izumi");
     }
 
     #[test]

@@ -1,8 +1,8 @@
-# rust_minecraft_mod_example
+# izumi
 
 [English README](./README.md)
 
-[![CI](https://github.com/topi-banana/rust_minecraft_mod_example/actions/workflows/ci.yml/badge.svg)](https://github.com/topi-banana/rust_minecraft_mod_example/actions/workflows/ci.yml)
+[![CI](https://github.com/topi-banana/izumi/actions/workflows/ci.yml/badge.svg)](https://github.com/topi-banana/izumi/actions/workflows/ci.yml)
 
 Java ツールチェーン・Gradle・Mixin Gradle plugin を一切使わず、`.class`
 ファイルと mod jar を全て Rust から組み立てる Fabric Minecraft mod 用
@@ -32,18 +32,18 @@ native-payloads/examples/minecraft_server.rs           builder/src/mixins/minecr
                        ▼                                              ▼
    target/release/examples/libminecraft_server.{so,dll,dylib}   cargo run -p builder
      └── exported JNI シンボル                                        │
-         Java_com_example_runtime_NativePayloads_hello                ▼
-                                                       out/hello-native-mod.jar
+         Java_com_izumi_runtime_NativePayloads_hello                ▼
+                                                       out/izumi.jar
                                                          ├─ fabric.mod.json
-                                                         ├─ hello-native-mod.mixins.json
-                                                         ├─ com/example/mixin/MinecraftServerMixin.class
-                                                         ├─ com/example/runtime/NativePayloads.class
-                                                         ├─ com/example/runtime/NativeLoader.class
+                                                         ├─ izumi.mixins.json
+                                                         ├─ com/izumi/mixin/MinecraftServerMixin.class
+                                                         ├─ com/izumi/runtime/NativePayloads.class
+                                                         ├─ com/izumi/runtime/NativeLoader.class
                                                          └─ native/<platform>/<libname>
 ```
 
 1. `#[inject]` proc macro は意図的に小さく作ってあり、対象関数を
-   `Java_com_example_runtime_NativePayloads_<jni_escaped_fn>` という
+   `Java_com_izumi_runtime_NativePayloads_<jni_escaped_fn>` という
    JNI シムでラップして cdylib にエクスポートするだけ。cdylib にメタ
    情報を埋め込んだりはしません。
 2. `builder/src/main.rs` がコンパイル時のリストを持ちます:
@@ -54,13 +54,13 @@ native-payloads/examples/minecraft_server.rs           builder/src/mixins/minecr
    (`native_lib_name`)」「Mixin クラスの simple name」「holder に
    公開する native メソッド一覧」「`@Inject` ハンドラ群 (bytecode 込)」
    を宣言します。builder はこのリストを舐めて以下を生成します:
-   - `com/example/mixin/<MixinName>.class` (Mixin ごとに 1 つ)
-   - `com/example/runtime/NativePayloads.class` — 全 `native static
+   - `com/izumi/mixin/<MixinName>.class` (Mixin ごとに 1 つ)
+   - `com/izumi/runtime/NativePayloads.class` — 全 `native static
      String <fn>()` 宣言を集める普通の (非 mixin) クラス。Mixin に
      native メソッドを直接置くと Mixin プロセッサがターゲットクラスに
      マージしてしまい JNI 静的バインディングが壊れるので、別 holder
      に逃がしています。
-   - `com/example/runtime/NativeLoader.class` — cdylib ごとに
+   - `com/izumi/runtime/NativeLoader.class` — cdylib ごとに
      `ensure_<lib>()V` synchronized メソッドと `loaded_<lib>: Z`
      フラグを生成し、`resourcePath(String libBasename)` ヘルパーで
      `os.name` / `os.arch` を見て jar 内パスを解決します。
@@ -86,7 +86,7 @@ cargo run -p builder
 ```
 
 builder が内部で `cargo build -p native-payloads --release --examples`
-を呼び、`out/hello-native-mod.jar` を生成します。Fabric Loader を
+を呼び、`out/izumi.jar` を生成します。Fabric Loader を
 入れた Minecraft の `<minecraft>/mods/` に投入してサーバー起動すると、
 `MinecraftServer#runServer` の `@At("HEAD")` に注入された Mixin が走り、
 ログに `Hello from native!` が出ます。
@@ -210,7 +210,7 @@ cdylib をビルドし、`{linux, windows, macos} × {x86_64, aarch64}` の
 ## `#[inject]` の仕様
 
 `#[inject_macro::inject]` は引数なしの attribute マクロ。Rust 関数を
-`Java_com_example_runtime_NativePayloads_<jni_escaped_fn_name>` という
+`Java_com_izumi_runtime_NativePayloads_<jni_escaped_fn_name>` という
 JNI シンボルでエクスポートします。`System.load` 後、JVM が
 `NativePayloads.<fn>()` の `native` 宣言と自動的に静的バインドします。
 
