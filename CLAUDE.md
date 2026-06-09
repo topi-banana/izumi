@@ -1,104 +1,114 @@
 # CLAUDE.md
 
-このリポジトリで作業する Claude Code 向けのガイダンス。
+Guidance for Claude Code working in this repository.
 
-## プロジェクト概要
+## Project overview
 
-izumi は **複数の Minecraft サーバー間でインベントリを共有する** Fabric mod
-（コンセプト）。現状で動くのは基盤部分 —— **Java/Gradle を使わず Rust だけで
-`.class` と mod jar を組み立てる** ツールチェーンと、Rust↔JVM 経路を検証する
-デモペイロード。インベントリ共有レイヤ自体は未実装（README のロードマップ参照）。
+izumi is a Fabric mod (concept) for **sharing one inventory across multiple
+Minecraft servers**. What works today is the foundation: a toolchain that
+**assembles `.class` files and the mod jar using only Rust, with no Java/Gradle**,
+plus demo payloads that exercise the Rust↔JVM path. The inventory-sharing layer
+itself is not implemented yet (see the README roadmap).
 
-ユーザーは日本語話者。応答・コミットメッセージ・コメントは日本語で（コード識別子
-やコマンドは原語のまま）。
+The user is a Japanese speaker — reply to them in Japanese. Everything committed
+to this repository is written in English (code comments, documentation, commit
+messages); the only Japanese file is `README_jp.md`. Code identifiers and
+commands stay in their original form.
 
-## よく使うコマンド
+## Common commands
 
 ```bash
-# mod jar をビルド（ホスト platform のみ）→ out/izumi.jar
+# Build the mod jar (host platform only) → out/izumi.jar
 cargo run -p builder
 
-# 集約モード: ローカルビルドをスキップし各 platform の成果物を取り込む
+# Aggregate mode: skip the local build and ingest each platform's artifacts
 NATIVE_LIB_DIRS=linux-x86_64=staging/linux-x86_64,windows-x86_64=staging/windows-x86_64 \
     cargo run -p builder
 
-# cdylib 単体ビルド（クロスは --target を付ける）
+# Build the cdylib on its own (add --target to cross-compile)
 cargo build -p native-payloads --release --examples
 
-# CI と同じ検証一式（コミット前に通すこと）
+# The same verification suite as CI (run it before committing)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 
-# JNI エクスポートシンボルの確認
+# Check the exported JNI symbols
 objdump -T target/release/examples/libminecraft_server.so | grep Java_
 ```
 
-`taplo`（Cargo.toml の整形）と `cargo-machete`（未使用依存）も CI で回る。
-Cargo.toml を編集したら `taplo format` を、依存を変えたら machete を意識すること。
+`taplo` (Cargo.toml formatting) and `cargo-machete` (unused deps) also run in CI.
+After editing a Cargo.toml run `taplo format`, and keep machete in mind whenever
+you change dependencies.
 
-## アーキテクチャ
+## Architecture
 
-ワークスペースは 4 crate。実行時コード（native-payloads）とビルド時コード
-（builder/src/mixins）は **ペイロードごとに 1:1 対応**。
+The workspace has 4 crates. Runtime code (native-payloads) and build-time code
+(builder/src/mixins) are in **1:1 correspondence per payload**.
 
-| crate | 役割 |
+| crate | role |
 | --- | --- |
-| `crates/inject-macro` | proc-macro。`#[inject]` 関数を JNI シムでラップして export |
-| `crates/api` | JNI ランタイムヘルパ（`CallbackInfo`, `println`, `EnvGuard`） |
-| `crates/native-payloads` | `examples/<name>.rs` が 1 ファイル = 1 cdylib（`[[example]]`） |
-| `crates/builder` | crustf で Mixin / NativeLoader / NativePayloads class と jar を生成する host bin |
+| `crates/inject-macro` | proc-macro: wraps an `#[inject]` function in a JNI shim and exports it |
+| `crates/api` | JNI runtime helpers (`CallbackInfo`, `println`, `EnvGuard`) |
+| `crates/native-payloads` | each `examples/<name>.rs` is one file = one cdylib (`[[example]]`) |
+| `crates/builder` | host bin that generates the Mixin / NativeLoader / NativePayloads classes and the jar via crustf |
 
-`builder` の生成物（`out/izumi.jar`）:
-`fabric.mod.json`、`izumi.mixins.json`、`com/izumi/mixin/<Name>.class`、
-`com/izumi/runtime/NativePayloads.class`、`com/izumi/runtime/NativeLoader.class`、
-`native/<platform>/<libname>`。
+`builder` outputs (`out/izumi.jar`):
+`fabric.mod.json`, `izumi.mixins.json`, `com/izumi/mixin/<Name>.class`,
+`com/izumi/runtime/NativePayloads.class`, `com/izumi/runtime/NativeLoader.class`,
+`native/<platform>/<libname>`.
 
-ペイロード追加の手順は **README の「ペイロード（フック）の追加」** が正本。
-要点: `examples/<name>.rs` に `#[inject]` 関数 → `Cargo.toml` に `[[example]]`
-→ `builder/src/mixins/<name>.rs` に `MixinClass` impl → `mixins/mod.rs` で
-re-export → `main.rs` の `const MIXINS` に追加。
+The canonical procedure for adding a payload is **"Writing a payload (hook)" in
+the README**. In short: add an `#[inject]` function to `examples/<name>.rs` → add
+an `[[example]]` to `Cargo.toml` → add a `MixinClass` impl to
+`builder/src/mixins/<name>.rs` → re-export it in `mixins/mod.rs` → add it to
+`const MIXINS` in `main.rs`.
 
-## 壊しやすい不変条件（編集時に注意）
+## Invariants that are easy to break (watch out when editing)
 
-- **owner 名の同期**: `inject-macro` の `JNI_NATIVE_OWNER`
-  (`"com_izumi_runtime_NativePayloads"`) と `builder` の `NATIVE_PAYLOADS_OWNER`
-  (`"com/izumi/runtime/NativePayloads"`) は必ず一致させる。パッケージをリネーム
-  するなら両方を同時に直し、再ビルド後に `objdump` でシンボルが holder クラスの
-  内部名と一致することを確認する。
-- **native メソッドは Mixin に置かない**。Mixin プロセッサがターゲットクラスへ
-  マージし、JVM が `Java_net_minecraft_..._<fn>` を探して `UnsatisfiedLinkError`
-  になる。必ず `NativePayloads` holder に集約する（`build_native_payloads_class`）。
-- **class file version をむやみに上げない**。Mixin は 52 (JAVA_8)。`NativeLoader`
-  は crustf default の 49 (Java 5) を使い、分岐コードでも `StackMapTable` を不要に
-  している（`build_native_loader_class` で `.version` を呼んでいないのは意図的）。
-- `native_lib_name()` は `[[example]]` の `name` と一致。`native_name` は Rust の
-  `#[inject]` 関数名と一致（JNI 規約で `_` → `_1`）。
-- 引数型は `JavaType` enum で表現し、descriptor / slot / load opcode を一元化する。
-  ハンドラと native の descriptor を手で二重定義しない。
+- **Keep the owner name in sync**: `inject-macro`'s `JNI_NATIVE_OWNER`
+  (`"com_izumi_runtime_NativePayloads"`) and `builder`'s `NATIVE_PAYLOADS_OWNER`
+  (`"com/izumi/runtime/NativePayloads"`) must always match. If you rename the
+  package, fix both at once and, after rebuilding, confirm with `objdump` that
+  the symbol matches the holder class's internal name.
+- **Do not place native methods on a Mixin**. The Mixin processor merges them
+  into the target class, and the JVM then looks up `Java_net_minecraft_..._<fn>`
+  and fails with `UnsatisfiedLinkError`. Always collect them into the
+  `NativePayloads` holder (`build_native_payloads_class`).
+- **Do not raise the class file version needlessly**. Mixins are 52 (JAVA_8).
+  `NativeLoader` uses the crustf default 49 (Java 5) and keeps `StackMapTable`
+  unnecessary even in branching code (not calling `.version` in
+  `build_native_loader_class` is intentional).
+- `native_lib_name()` matches the `[[example]]` `name`. `native_name` matches the
+  Rust `#[inject]` function name (with `_` → `_1` per the JNI convention).
+- Argument types are expressed with the `JavaType` enum, which centralizes the
+  descriptor / slot / load opcode. Do not hand-duplicate the handler and native
+  descriptors.
 
-## ビルド環境・規約
+## Build environment & conventions
 
-- Rust 1.95+ / edition 2024 / stable（`rust-toolchain.toml`）。
-- `crustf` は **git 依存**（`https://github.com/topi-banana/crustf`）。初回ビルド
-  はネットワークが必要。
-- release profile は `opt-level = "s"`, `lto = true`, `codegen-units = 1`,
-  `panic = "abort"`, `strip = "debuginfo"`（jar 内ネイティブを小さく保つため）。
-- `out/`, `target/`, `staging/` は `.gitignore` 済み。コミットに混入させない。
+- Rust 1.95+ / edition 2024 / stable (`rust-toolchain.toml`).
+- `crustf` is a **git dependency** (`https://github.com/topi-banana/crustf`); the
+  first build needs network access.
+- The release profile is `opt-level = "s"`, `lto = true`, `codegen-units = 1`,
+  `panic = "abort"`, `strip = "debuginfo"` (to keep the in-jar natives small).
+- `out/`, `target/`, and `staging/` are already in `.gitignore`. Do not let them
+  slip into a commit.
 
-## CI（`.github/workflows/ci.yml`）
+## CI (`.github/workflows/ci.yml`)
 
-- `fmt` / `clippy` / `test` / `taplo` / `machete` のあと、`build-natives`
-  （6 platform matrix）で cdylib をネイティブビルド → `package` が全部集約して
-  cross-platform な `out/izumi.jar` を生成。
-- `package` は成果物レポートを `$GITHUB_STEP_SUMMARY`（Job Summary）に出力し、
-  **同一の `summary.md`** を `marocchino/sticky-pull-request-comment@v3` で PR に
-  投稿する（`pull_request` 時のみ、fork PR 対策で `continue-on-error`）。
-- workflow を編集したら YAML の妥当性と、`summarize build` ステップのシェルを
-  ローカルの実 jar で試してから push すると安全。
-- CI・dependabot・PR コメントは **GitHub に push して初めて動作** する。
+- After `fmt` / `clippy` / `test` / `taplo` / `machete`, `build-natives`
+  (a 6-platform matrix) builds the cdylib natively → `package` aggregates them all
+  into a cross-platform `out/izumi.jar`.
+- `package` writes the artifact report to `$GITHUB_STEP_SUMMARY` (the Job Summary)
+  and posts the **same `summary.md`** to the PR via
+  `marocchino/sticky-pull-request-comment@v3` (only on `pull_request`, with
+  `continue-on-error` to guard against fork PRs).
+- After editing the workflow, it is safer to check the YAML validity and to try
+  the `summarize build` step's shell against a real local jar before pushing.
+- CI, dependabot, and PR comments only run **once pushed to GitHub**.
 
-## やらないこと
+## Things not to do
 
-- ユーザーの明示依頼なしに push / リモート作成 / リリースを行わない。
-- `git config` を変更しない、`--force` / hard reset を勝手に使わない。
+- Do not push / create remotes / release without the user's explicit request.
+- Do not change `git config`, and do not use `--force` / hard reset on your own.

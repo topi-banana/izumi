@@ -4,12 +4,12 @@ use quote::{format_ident, quote};
 use syn::parse::Nothing;
 use syn::{FnArg, ItemFn, PatType, Type, parse_macro_input};
 
-// JNI 関数名の owner prefix (`package_class` を JNI 規約で `_` 連結したもの)。
-// Mixin クラスに直接 native メソッドを置くと Mixin プロセッサがターゲット
-// クラスへマージしてしまい JNI 静的バインディングが破綻するので、 別途
-// `com.izumi.runtime.NativePayloads` という holder クラスに集約する。
-// builder 側 `NATIVE_PAYLOADS_OWNER` ("com/izumi/runtime/NativePayloads")
-// と必ず同期させること。
+// Owner prefix of the JNI function name (`package_class` joined with `_` per the
+// JNI convention). Placing native methods directly on a Mixin class makes the
+// Mixin processor merge them into the target class and breaks JNI static
+// binding, so they are collected into a separate holder class,
+// `com.izumi.runtime.NativePayloads`. Keep this in sync with the builder-side
+// `NATIVE_PAYLOADS_OWNER` ("com/izumi/runtime/NativePayloads").
 const JNI_NATIVE_OWNER: &str = "com_izumi_runtime_NativePayloads";
 
 /// JNI shortened name escape per JNI Specification §13.2:
@@ -35,9 +35,9 @@ fn jni_escape(s: &str) -> String {
     out
 }
 
-/// `ty` が `CallbackInfo` (path の最終 segment が `CallbackInfo`) かどうか。
-/// `api::CallbackInfo`, `::api::CallbackInfo`, `CallbackInfo<'local>` を全て拾う。
-/// `use api::CallbackInfo as Foo;` のような rename には未対応。
+/// Whether `ty` is `CallbackInfo` (its last path segment is `CallbackInfo`).
+/// Matches `api::CallbackInfo`, `::api::CallbackInfo`, and `CallbackInfo<'local>`.
+/// Renames such as `use api::CallbackInfo as Foo;` are not handled.
 fn is_callback_info(ty: &Type) -> bool {
     if let Type::Path(p) = ty
         && let Some(seg) = p.path.segments.last()
@@ -60,7 +60,7 @@ pub fn inject(args: TokenStream, input: TokenStream) -> TokenStream {
     let block = &func.block;
     let inputs = &func.sig.inputs;
 
-    // `self` は禁止 (JNI static native との対応が成立しないため)。
+    // `self` is forbidden (it cannot correspond to a JNI static native method).
     for arg in inputs {
         if let FnArg::Receiver(r) = arg {
             return syn::Error::new_spanned(r, "#[inject] functions cannot take `self`")
@@ -85,14 +85,14 @@ pub fn inject(args: TokenStream, input: TokenStream) -> TokenStream {
         .map(|pt| is_callback_info(&pt.ty))
         .unwrap_or(false);
 
-    // CallbackInfo を除いた「対象メソッド由来引数」相当。
+    // The "arguments derived from the target method", i.e. excluding CallbackInfo.
     let regular_params: &[&PatType] = if has_ci {
         &pat_types[..pat_types.len() - 1]
     } else {
         &pat_types[..]
     };
 
-    // JNI wrapper の宣言パラメータ。 ユーザーが書いた `ty` をそのまま転写。
+    // Declared parameters of the JNI wrapper. Transcribes the user-written `ty` verbatim.
     let jni_param_decls: Vec<TokenStream2> = regular_params
         .iter()
         .enumerate()
@@ -109,7 +109,7 @@ pub fn inject(args: TokenStream, input: TokenStream) -> TokenStream {
         None
     };
 
-    // 内側関数 (`__inject_impl_*`) 呼び出し時の実引数式。
+    // Actual argument expressions for the inner function (`__inject_impl_*`) call.
     let call_arg_exprs: Vec<TokenStream2> = {
         let mut v: Vec<TokenStream2> = regular_params
             .iter()
@@ -137,8 +137,9 @@ pub fn inject(args: TokenStream, input: TokenStream) -> TokenStream {
             #ci_param_decl
         ) {
             let mut env = env;
-            // SAFETY: `env` はこの JNI 関数呼び出しの間だけ有効で、guard と
-            // 同じスコープにあるので、guard より長生きしない。
+            // SAFETY: `env` is valid only for the duration of this JNI function
+            // call and lives in the same scope as the guard, so it never
+            // outlives the guard.
             let _guard = unsafe { ::api::EnvGuard::enter(&mut env) };
             #inner_ident( #(#call_arg_exprs),* );
         }
@@ -177,7 +178,7 @@ mod tests {
 
     #[test]
     fn jni_escape_unicode_bmp() {
-        // U+3042 HIRAGANA LETTER A
-        assert_eq!(jni_escape("あ"), "_03042");
+        // U+03A9 GREEK CAPITAL LETTER OMEGA
+        assert_eq!(jni_escape("Ω"), "_003a9");
     }
 }

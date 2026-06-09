@@ -17,8 +17,9 @@ fn emit_call_native(
         "()V",
     );
 
-    // slot 0 = this (instance handler なので除外)。
-    // slot 1 から対象メソッド引数を順に load し、その直後の slot に CallbackInfo。
+    // slot 0 = this (excluded, since this is an instance handler).
+    // Load the target-method arguments in order starting at slot 1, with
+    // CallbackInfo in the slot immediately after.
     let mut slot: u16 = 1;
     for t in target_args {
         t.emit_load(c, slot);

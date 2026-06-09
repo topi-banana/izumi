@@ -4,10 +4,11 @@ pub mod minecraft_server;
 
 pub use minecraft_server::MinecraftServerMixin;
 
-/// 対象メソッド引数の Java 側型。 descriptor 1 文字 (または `L...;` / `[...`)、
-/// stack/local の slot size、対応する load opcode の 3 つをここから派生させる。
+/// Java-side type of a target-method argument. The single-character descriptor
+/// (or `L...;` / `[...`), the stack/local slot size, and the matching load
+/// opcode are all derived from this.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // public な variant 集合: 個別 Mixin で必要なときに使う。
+#[allow(dead_code)] // Public set of variants: used by individual Mixins as needed.
 pub enum JavaType {
     Int,
     Long,
@@ -19,8 +20,9 @@ pub enum JavaType {
     Char,
     /// internal name, e.g. `"java/util/function/BooleanSupplier"`.
     Object(&'static str),
-    /// 先頭 `'['` を除いた残りの descriptor。 例えば int 配列なら `"I"`、
-    /// `String[]` なら `"Ljava/lang/String;"`、 二次元 int 配列なら `"[I"`。
+    /// The descriptor remaining after the leading `'['`. For example, `"I"` for
+    /// an int array, `"Ljava/lang/String;"` for `String[]`, and `"[I"` for a
+    /// two-dimensional int array.
     Array(&'static str),
 }
 
@@ -47,7 +49,7 @@ impl JavaType {
         }
     }
 
-    /// `slot` 位置の値を operand stack に積む。
+    /// Pushes the value at position `slot` onto the operand stack.
     pub fn emit_load(&self, c: &mut CodeBuilder, slot: u16) {
         match self {
             JavaType::Long => {
@@ -73,7 +75,7 @@ impl JavaType {
     }
 }
 
-/// `com.izumi.runtime.NativePayloads` に置く 1 個の native static method。
+/// A single native static method placed on `com.izumi.runtime.NativePayloads`.
 pub struct NativeMethod {
     pub name: String,
     pub descriptor: String,
@@ -94,25 +96,26 @@ impl std::fmt::Display for MixinAt {
     }
 }
 
-/// 生成 Mixin クラス側の 1 個の @Inject ハンドラ method。
+/// A single @Inject handler method on the generated Mixin class.
 pub struct MixinMethod {
     pub name: &'static str,
     pub target_method: &'static str,
-    /// 対象メソッドの引数列。 これと `CallbackInfo` 末尾結合から handler / native
-    /// 双方の descriptor が一意に決まる。
+    /// The target method's argument list. Combined with a trailing
+    /// `CallbackInfo`, it uniquely determines both the handler and native
+    /// descriptors.
     pub target_args: &'static [JavaType],
     pub at: MixinAt,
     pub cancellable: bool,
     pub exceptions: &'static [&'static str],
-    /// NativePayloads holder クラスに置く native static method の名前
-    /// (= Rust 側 `#[inject]` 関数名)。
+    /// Name of the native static method placed on the NativePayloads holder
+    /// class (= the Rust-side `#[inject]` function name).
     pub native_name: &'static str,
     pub code: fn(&MixinMethod, &dyn MixinClass, &mut CodeBuilder),
 }
 
 impl MixinMethod {
-    /// Mixin handler / native static method の両方で使う descriptor。
-    /// 並び: target_args 群 + CallbackInfo。 return 型は void。
+    /// Descriptor used by both the Mixin handler and the native static method.
+    /// Order: the target_args followed by CallbackInfo. The return type is void.
     pub fn descriptor(&self) -> String {
         let mut s = String::from("(");
         for t in self.target_args {
@@ -132,16 +135,16 @@ pub trait MixinClass: Sync {
 
     fn mixin_class_simple_name(&self) -> &'static str;
 
-    /// 対応する cdylib の name (= `[[example]] name`)。
-    /// builder は `target/release/examples/{prefix}<name>{suffix}` を期待する。
+    /// Name of the corresponding cdylib (= `[[example]] name`). The builder
+    /// expects `target/release/examples/{prefix}<name>{suffix}`.
     fn native_lib_name(&self) -> &'static str;
 
     fn methods(&self) -> &'static [MixinMethod];
 
-    /// `methods()` から native_name + descriptor を重複排除して一覧化。
-    /// 同じ payload (例: `cancel_demo`) に対して複数の @Inject が向く構成でも
-    /// `(name, descriptor)` ペアで dedupe するので NativePayloads には 1 つだけ
-    /// native 宣言が出る。
+    /// Lists native_name + descriptor from `methods()`, deduplicated. Even when
+    /// multiple @Inject handlers point at the same payload (e.g. `cancel_demo`),
+    /// deduping on the `(name, descriptor)` pair means NativePayloads emits only
+    /// one native declaration.
     fn native_methods(&self) -> Vec<NativeMethod> {
         let mut seen: std::collections::BTreeSet<(String, String)> =
             std::collections::BTreeSet::new();

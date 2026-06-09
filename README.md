@@ -2,15 +2,15 @@
 
 [![CI](https://github.com/topi-banana/izumi/actions/workflows/ci.yml/badge.svg)](https://github.com/topi-banana/izumi/actions/workflows/ci.yml)
 
-[日本語版 README](./README_jp.md)
+[Japanese version](./README_jp.md)
 
 **izumi** is a Fabric Minecraft mod for **sharing one inventory across multiple
 servers** — stash items on one server and pull them back on any other server
 wired to the same pool.
 
-The name is 泉 *izumi*, "a spring": a shared **storage pool** that every server
-draws from and feeds back into. *(The name also tips its hat to a certain
-tautological turn of phrase.)*
+The name is *izumi*, the Japanese word for "a spring": a shared **storage pool**
+that every server draws from and feeds back into. *(The name also tips its hat
+to a certain tautological turn of phrase.)*
 
 > **Status — early / concept.** What works today is the build foundation: the
 > mod jar is assembled **entirely from Rust**, with no Java toolchain, no

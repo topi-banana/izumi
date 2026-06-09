@@ -17,11 +17,12 @@ use mixins::{MinecraftServerMixin, MixinClass};
 pub const MIXIN_PACKAGE: &str = "com.izumi.mixin";
 pub const MIXIN_PACKAGE_INTERNAL: &str = "com/izumi/mixin";
 pub const NATIVE_LOADER_INTERNAL: &str = "com/izumi/runtime/NativeLoader";
-// JNI 静的バインディングの対象 holder クラス。Mixin に native メソッドを
-// 置くと Mixin プロセッサがターゲットクラスにマージしてしまうため (結果
-// として `Java_net_minecraft_server_MinecraftServer_<fn>` を JVM が探して
-// UnsatisfiedLinkError)、 別の通常 Java クラスに集約する。inject-macro 側
-// `JNI_NATIVE_OWNER` ("com_izumi_runtime_NativePayloads") と必ず同期。
+// Holder class targeted by JNI static binding. Placing native methods on a
+// Mixin makes the Mixin processor merge them into the target class (so the JVM
+// looks up `Java_net_minecraft_server_MinecraftServer_<fn>` and fails with
+// UnsatisfiedLinkError), so they are collected into a separate plain Java class.
+// Keep in sync with the inject-macro-side `JNI_NATIVE_OWNER`
+// ("com_izumi_runtime_NativePayloads").
 pub const NATIVE_PAYLOADS_OWNER: &str = "com/izumi/runtime/NativePayloads";
 const MOD_ID: &str = "izumi";
 const NATIVES_PACKAGE: &str = "native-payloads";
@@ -349,8 +350,8 @@ fn build_native_payloads_class(mixins: &[&dyn MixinClass]) -> crustf::Result<Vec
 }
 
 fn build_native_loader_class(lib_names: &[&str]) -> crustf::Result<Vec<u8>> {
-    // 明示的に `.version` を呼ばない → crustf default の JAVA_5 (49) になり、
-    // ifeq/ifne/goto を含む分岐コードでも StackMapTable を出力する必要がない。
+    // Intentionally do not call `.version` → it stays at the crustf default
+    // JAVA_5 (49), so branch code with ifeq/ifne/goto needs no StackMapTable.
     let mut b = ClassFileBuilder::new(NATIVE_LOADER_INTERNAL)
         .method(
             MethodBuilder::new("<init>", "()V")
@@ -406,7 +407,7 @@ fn build_native_loader_class(lib_names: &[&str]) -> crustf::Result<Vec<u8>> {
 ///     return "/native/" + os + "-" + arch + "/" + libName;
 /// }
 /// ```
-/// local 0 = libBasename (引数), 1 = osName, 2 = arch, 3 = os, 4 = libName。
+/// local 0 = libBasename (arg), 1 = osName, 2 = arch, 3 = os, 4 = libName.
 fn emit_resource_path(c: &mut CodeBuilder) {
     let l_not_amd64 = c.label();
     let l_not_arm64 = c.label();
