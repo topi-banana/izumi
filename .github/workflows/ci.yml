@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  taplo:
+    name: taplo (Cargo.toml formatting)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install taplo
+        run: |
+          curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz \
+          | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
+      - run: taplo format --check --diff
+
+  machete:
+    name: cargo-machete (unused deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked --version '^0.7'
+      - run: cargo machete
+
+  build-natives:
+    name: build native-payloads (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    platform: linux-x86_64,    ext: so    }
+          - { os: ubuntu-22.04-arm, platform: linux-aarch64,   ext: so    }
+          - { os: windows-latest,   platform: windows-x86_64,  ext: dll   }
+          - { os: windows-11-arm,   platform: windows-aarch64, ext: dll   }
+          - { os: macos-15-intel,   platform: macos-x86_64,    ext: dylib }
+          - { os: macos-latest,     platform: macos-aarch64,   ext: dylib }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p native-payloads --release --examples
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: |
+            target/release/examples/*.${{ matrix.ext }}
+            !target/release/examples/*-*.${{ matrix.ext }}
+          if-no-files-found: error
+
+  package:
+    name: package mod jar
+    runs-on: ubuntu-latest
+    needs: [build-natives]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: stage native libs
+        run: |
+          for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-aarch64 macos-x86_64 macos-aarch64; do
+            mkdir -p "staging/$p"
+            cp "artifacts/native-$p"/* "staging/$p/"
+          done
+          ls -laR staging
+      - name: build mod jar
+        run: cargo run -p builder
+        env:
+          NATIVE_LIB_DIRS: >-
+            linux-x86_64=staging/linux-x86_64,linux-aarch64=staging/linux-aarch64,windows-x86_64=staging/windows-x86_64,windows-aarch64=staging/windows-aarch64,macos-x86_64=staging/macos-x86_64,macos-aarch64=staging/macos-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod-jar
+          path: out/*.jar
+          if-no-files-found: error
