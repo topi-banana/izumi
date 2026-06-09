@@ -1,81 +1,88 @@
 # izumi
 
-[日本語版 README](./README_jp.md)
-
 [![CI](https://github.com/topi-banana/izumi/actions/workflows/ci.yml/badge.svg)](https://github.com/topi-banana/izumi/actions/workflows/ci.yml)
 
-A Fabric Minecraft mod toolchain that builds `.class` files and the mod
-jar entirely from Rust — no Java toolchain, no Gradle, no Mixin Gradle
-plugin. Server-side hooks are written as plain Rust functions annotated
-with `#[inject]`; the corresponding Mixin metadata (target class, target
-method, `@At`, bytecode body) lives next to them as a `MixinClass` trait
-implementation in the builder. The host side loads the bundled `.so` /
-`.dll` / `.dylib` at runtime and calls into it over JNI — no third-party
-runtime such as wasmer-java required.
+[日本語版 README](./README_jp.md)
 
-## How it works
+**izumi** is a Fabric Minecraft mod for **sharing one inventory across multiple
+servers** — stash items on one server and pull them back on any other server
+wired to the same pool.
 
-Runtime code and build code sit in 1:1 correspondence: one payload is
-one `.rs` file on each side.
+The name is 泉 *izumi*, "a spring": a shared **storage pool** that every server
+draws from and feeds back into. *(The name also tips its hat to a certain
+tautological turn of phrase.)*
+
+> **Status — early / concept.** What works today is the build foundation: the
+> mod jar is assembled **entirely from Rust**, with no Java toolchain, no
+> Gradle, and no Mixin Gradle plugin. The cross-server inventory layer itself is
+> on the [roadmap](#roadmap); the repo currently ships small demo payloads that
+> exercise the Rust↔JVM path end to end.
+
+## Concept
+
+One logical inventory — the *pool* — backs many Minecraft servers. The intended
+shape:
+
+- Inventory and container operations are intercepted server-side via Mixin
+  hooks (`@Inject`), generated here as plain `.class` files.
+- Each hook calls into a native Rust library over JNI. The Rust side owns the
+  pool: it reads and writes item state and reconciles it across servers (over a
+  network link or a shared backend).
+- Because the JVM-facing glue is generated, adding a new hook point is a small
+  Rust edit on each side — no Gradle project, no Java sources to maintain.
+
+Today the demo payloads only print to the server log (see
+[Current demo](#current-demo)); the persistence and sync layers are not built
+yet. The rest of this document describes the toolchain that makes those payloads
+possible.
+
+## How the toolchain works
+
+Runtime code and build code sit in **1:1 correspondence** — one payload is one
+`.rs` file on each side.
 
 ```
-native-payloads/examples/minecraft_server.rs           builder/src/mixins/minecraft_server.rs
- ┌──────────────────────────────────────────┐          ┌──────────────────────────────────────────┐
- │ #[inject_macro::inject]                  │          │ pub struct MinecraftServerMixin;         │
- │ fn hello() -> &'static str {             │   1:1    │ impl MixinClass for MinecraftServerMixin │
- │     "Hello from native!"                 │ <──────> │ {  fn target_class(&self) { ... }        │
- │ }                                        │          │    fn native_methods(&self) { ... }      │
- └──────────────────────────────────────────┘          │    fn methods(&self) { /* @Inject ... */}│
-                       │                               │ }                                        │
-   cargo build -p native-payloads                      └──────────────────────────────────────────┘
-        --release --examples                                          │
-                       ▼                                              ▼
-   target/release/examples/libminecraft_server.{so,dll,dylib}   cargo run -p builder
-     └── exported JNI symbol                                          │
-         Java_com_izumi_runtime_NativePayloads_hello                ▼
-                                                       out/izumi.jar
-                                                         ├─ fabric.mod.json
-                                                         ├─ izumi.mixins.json
-                                                         ├─ com/izumi/mixin/MinecraftServerMixin.class
-                                                         ├─ com/izumi/runtime/NativePayloads.class
-                                                         ├─ com/izumi/runtime/NativeLoader.class
-                                                         └─ native/<platform>/<libname>
+native-payloads/examples/minecraft_server.rs          builder/src/mixins/minecraft_server.rs
+ ┌─────────────────────────────────────────┐          ┌────────────────────────────────────────────┐
+ │ #[inject_macro::inject]                  │          │ impl MixinClass for MinecraftServerMixin {   │
+ │ fn hello(_ci: CallbackInfo) {            │   1:1    │   target_class() / native_lib_name() /       │
+ │     println("Hello from native!").ok();  │ <──────> │   methods() -> &[MixinMethod { … }]          │
+ │ }                                        │          │ }                                            │
+ └─────────────────────────────────────────┘          └────────────────────────────────────────────┘
+        │ cargo build -p native-payloads                                │ cargo run -p builder
+        ▼    --release --examples                                       ▼
+ target/release/examples/libminecraft_server.{so,dll,dylib}        out/izumi.jar
+   └─ exported JNI symbol                                            ├─ fabric.mod.json
+      Java_com_izumi_runtime_NativePayloads_hello                   ├─ izumi.mixins.json
+                                                                    ├─ com/izumi/mixin/MinecraftServerMixin.class
+                                                                    ├─ com/izumi/runtime/NativePayloads.class
+                                                                    ├─ com/izumi/runtime/NativeLoader.class
+                                                                    └─ native/<platform>/<libname>
 ```
 
-1. The `#[inject]` proc macro is intentionally tiny: it wraps each
-   annotated Rust function in a JNI shim exported as
-   `Java_com_izumi_runtime_NativePayloads_<jni_escaped_fn>`. Nothing
-   else is embedded in the cdylib.
-2. `builder/src/main.rs` keeps a compile-time list:
-   ```rust
-   const MIXINS: &[&dyn MixinClass] = &[&MinecraftServerMixin, /* ... */];
-   ```
-   Each `MixinClass` impl declares its target class, the cdylib it
-   maps to (`native_lib_name`), the Mixin class' simple name, the
-   native methods to expose on the shared holder, and the `@Inject`
-   handlers (with their bytecode). The builder iterates the list and
-   emits:
-   - `com/izumi/mixin/<MixinName>.class` per mixin.
-   - `com/izumi/runtime/NativePayloads.class` — a plain (non-mixin)
-     class hosting every `native static String <fn>()` declaration.
-     Mixins themselves can't host native methods because the Mixin
-     processor would merge them into the target class and break JNI
-     static binding.
-   - `com/izumi/runtime/NativeLoader.class` — one
-     `ensure_<lib>()V` synchronized method and `loaded_<lib>: Z` flag
-     per cdylib, sharing a `resourcePath(String libBasename)` helper
-     that resolves the in-jar path based on `os.name` / `os.arch`.
-3. At runtime, each Mixin handler calls
-   `NativeLoader.ensure_<lib>()` once, which extracts the appropriate
-   `.so` / `.dll` / `.dylib` from the jar into a temp file (registered
-   for cleanup via `deleteOnExit`) and `System.load`s it. From there
-   the JVM binds `NativePayloads.<fn>()` to the Rust-side JNI shims.
+1. The `#[inject]` proc-macro wraps each annotated Rust function in a JNI shim
+   exported as `Java_com_izumi_runtime_NativePayloads_<fn>`. Nothing else is
+   embedded in the cdylib.
+2. `builder` keeps a compile-time list — `const MIXINS: &[&dyn MixinClass]` — and
+   for each entry emits:
+   - `com/izumi/mixin/<MixinName>.class` — the Mixin, one `@Inject` handler per
+     `MixinMethod`.
+   - `com/izumi/runtime/NativePayloads.class` — a plain holder class declaring
+     every `public static native <fn>(…)`. (Mixins can't host native methods:
+     the Mixin processor would merge them into the target class and break JNI
+     static binding, so they live in a separate holder.)
+   - `com/izumi/runtime/NativeLoader.class` — an `ensure_<lib>()` method per
+     cdylib plus a `resourcePath(...)` helper that resolves the in-jar path from
+     `os.name` / `os.arch`.
+3. At runtime each handler calls `NativeLoader.ensure_<lib>()` once, which
+   extracts the right `.so` / `.dll` / `.dylib` from the jar to a temp file
+   (`deleteOnExit`) and `System.load`s it. From there the JVM binds
+   `NativePayloads.<fn>()` to the Rust JNI shim.
 
 ## Prerequisites
 
-- Rust 1.95+
-- A Minecraft + [Fabric Loader] 0.15+ install on Minecraft 1.20+ for the
-  end-to-end test.
+- Rust 1.95+ (edition 2024)
+- For an end-to-end run: Minecraft 1.20+ with [Fabric Loader] 0.15+
 
 [Fabric Loader]: https://fabricmc.net/
 
@@ -87,16 +94,14 @@ native-payloads/examples/minecraft_server.rs           builder/src/mixins/minecr
 cargo run -p builder
 ```
 
-The builder invokes `cargo build -p native-payloads --release --examples`
-itself, then packages everything into `out/izumi.jar`. Drop
-the jar into `<minecraft>/mods/` next to a Fabric Loader install; on
-server start the Mixin runs at `MinecraftServer#runServer @At("HEAD")`
-and you see `Hello from native!` in the log.
+The builder runs `cargo build -p native-payloads --release --examples` itself,
+then writes `out/izumi.jar`. Drop the jar into `<minecraft>/mods/` next to a
+Fabric Loader install.
 
-### Linux + Windows from a single Linux (or WSL2) host
+### Linux + Windows from one Linux/WSL2 host
 
-The Windows MSVC toolchain isn't usable from WSL2, but `gnu` via
-mingw-w64 cross-compiles fine:
+The Windows MSVC toolchain isn't usable from WSL2, but the `gnu` target
+cross-compiles via mingw-w64:
 
 ```
 rustup target add x86_64-pc-windows-gnu
@@ -106,150 +111,178 @@ cargo build -p native-payloads --release --examples
 cargo build -p native-payloads --release --examples --target x86_64-pc-windows-gnu
 
 mkdir -p staging/linux-x86_64 staging/windows-x86_64
-cp target/release/examples/libminecraft_server.so                       staging/linux-x86_64/
-cp target/x86_64-pc-windows-gnu/release/examples/minecraft_server.dll   staging/windows-x86_64/
+cp target/release/examples/libminecraft_server.so                     staging/linux-x86_64/
+cp target/x86_64-pc-windows-gnu/release/examples/minecraft_server.dll staging/windows-x86_64/
 
 NATIVE_LIB_DIRS=linux-x86_64=staging/linux-x86_64,windows-x86_64=staging/windows-x86_64 \
     cargo run -p builder
 ```
 
-`NATIVE_LIB_DIRS` switches the builder into *aggregate mode*: it skips
-the local cargo build and reads every `.so` / `.dll` / `.dylib` it can
-find under each `<platform>=<dir>` mapping. Multiple payloads in the
-same directory are all picked up.
+`NATIVE_LIB_DIRS` switches the builder into **aggregate mode**: it skips the
+local cargo build and bundles every `.so` / `.dll` / `.dylib` found under each
+`<platform>=<dir>` mapping.
 
 ### CI (all 6 platforms)
 
-`build-natives` in [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)
-builds the cdylibs natively on `{linux, windows, macos} × {x86_64, aarch64}`
-GitHub-hosted runners (`ubuntu-latest`, `ubuntu-22.04-arm`,
-`windows-latest`, `windows-11-arm`, `macos-15-intel`, `macos-latest`).
-The `package` job downloads all 6 artifacts and reruns
-`cargo run -p builder` with `NATIVE_LIB_DIRS` covering every platform.
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) builds the cdylibs
+natively across `{linux, windows, macos} × {x86_64, aarch64}` GitHub-hosted
+runners, then aggregates all six into one `out/izumi.jar`. See
+[Continuous integration](#continuous-integration).
 
-The `ubuntu-22.04-arm` and `windows-11-arm` ARM runners are free for
-public repositories; private repos may need a paid plan.
-
-## Adding a hook
-
-A new payload takes one `.rs` file on each side plus three small
-wiring edits.
-
-1. **Runtime code** — `crates/native-payloads/examples/<name>.rs`:
-   ```rust
-   #[inject_macro::inject]
-   fn run() -> &'static str { "another hook!" }
-   ```
-2. **Cargo.toml entry** — `crates/native-payloads/Cargo.toml`:
-   ```toml
-   [[example]]
-   name = "<name>"
-   path = "examples/<name>.rs"
-   crate-type = ["cdylib"]
-   ```
-3. **Build code** — `crates/builder/src/mixins/<name>.rs`:
-   ```rust
-   use crustf::CodeBuilder;
-   use super::{MixinClass, MixinMethod, NativeMethod};
-   use crate::{NATIVE_LOADER_INTERNAL, NATIVE_PAYLOADS_OWNER};
-
-   pub struct AnotherMixin;
-
-   const NATIVES: &[NativeMethod] = &[NativeMethod {
-       name: "run",
-       descriptor: "()Ljava/lang/String;",
-   }];
-
-   const METHODS: &[MixinMethod] = &[MixinMethod {
-       name: "onLoadWorld",
-       descriptor: "(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V",
-       target_method: "loadWorld",
-       at: "TAIL",
-       exceptions: &["java/io/IOException"],
-       code: emit_on_load_world,
-   }];
-
-   fn emit_on_load_world(owner: &dyn MixinClass, c: &mut CodeBuilder) {
-       c.max_stack(2);
-       c.invokestatic(
-           NATIVE_LOADER_INTERNAL,
-           &format!("ensure_{}", owner.native_lib_name()),
-           "()V",
-       )
-       .invokestatic(NATIVE_PAYLOADS_OWNER, "run", "()Ljava/lang/String;")
-       .astore(2)
-       .getstatic("java/lang/System", "out", "Ljava/io/PrintStream;")
-       .aload(2)
-       .invokevirtual("java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-       .return_void();
-   }
-
-   impl MixinClass for AnotherMixin {
-       fn target_class(&self) -> &'static str { "net/minecraft/server/MinecraftServer" }
-       fn mixin_class_simple_name(&self) -> &'static str { "AnotherMixin" }
-       fn native_lib_name(&self) -> &'static str { "<name>" }
-       fn native_methods(&self) -> &'static [NativeMethod] { NATIVES }
-       fn methods(&self) -> &'static [MixinMethod] { METHODS }
-   }
-   ```
-4. **Re-export** — `crates/builder/src/mixins/mod.rs`:
-   ```rust
-   pub mod <name>;
-   pub use <name>::AnotherMixin;
-   ```
-5. **List in main** — `crates/builder/src/main.rs`:
-   ```rust
-   const MIXINS: &[&dyn MixinClass] = &[&MinecraftServerMixin, &AnotherMixin];
-   ```
-
-Multiple `@Inject` handlers on the same Mixin class are just additional
-entries in `METHODS` — `MinecraftServerMixin` already ships two (HEAD
-and RETURN of `runServer`) as a demo.
-
-## `#[inject]` contract
-
-`#[inject_macro::inject]` takes no arguments. It emits a JNI wrapper
-exported under
-`Java_com_izumi_runtime_NativePayloads_<jni_escaped_fn_name>` so the
-JVM binds the corresponding `native static String <fn>()` declaration
-on `NativePayloads` automatically once `System.load` has run.
-
-The annotated function must currently return `&'static str` (or any
-value that coerces to `&str`); the macro hands it back to Java via
-`JNIEnv::new_string`.
-
-Target class, target method, `@At` injection point, and Mixin class
-name all live in the `MixinClass` impl on the builder side — single
-source of truth, no duplication between cdylib metadata and the
-generated classes.
-
-## Workspace layout
+## Project layout
 
 ```
 crates/
-├── inject-macro/      proc-macro: emits the JNI wrapper for #[inject]
-├── native-payloads/   one cdylib per `examples/<name>.rs` ([[example]])
-└── builder/           one MixinClass impl per `src/mixins/<name>.rs`;
-                       main.rs lists them in `const MIXINS` and emits
-                       the mod jar via crustf
+├── inject-macro/     proc-macro: wraps an #[inject] fn in a JNI shim
+├── api/              JNI runtime helpers (CallbackInfo, println, EnvGuard)
+├── native-payloads/  one cdylib per examples/<name>.rs ([[example]])
+└── builder/          one MixinClass impl per src/mixins/<name>.rs;
+                      main.rs lists them in `const MIXINS` and emits the jar
 ```
 
-## Limitations
+## Writing a payload (hook)
 
-- One signature shape: `fn() -> &'static str`. Other signatures are not
-  supported in v1.
-- `compatibilityLevel: JAVA_8` on the Mixin (class file version 52);
-  the generated `onRun` body is branchless so no `StackMapTable` is
-  needed. `NativeLoader` is emitted at class file version 49 (Java 5)
-  so its OS-detection branches don't require a `StackMapTable` either.
-- CI covers the full 6-way `{linux, windows, macos} × {x86_64, aarch64}`
-  matrix using native GitHub-hosted runners (no cross-compilation).
-  Additional architectures (e.g. `riscv64`) can be added by appending a
-  matrix entry plus an entry in the `package` job's `NATIVE_LIB_DIRS`
-  env var.
+A new hook is one `.rs` file on each side plus three small wiring edits.
+
+**1. Runtime code** — `crates/native-payloads/examples/greet.rs`:
+
+```rust
+use api::{CallbackInfo, println};
+
+#[inject_macro::inject]
+fn greet(_ci: CallbackInfo) {
+    println("hello from another payload").ok();
+}
+```
+
+**2. Cargo entry** — `crates/native-payloads/Cargo.toml`:
+
+```toml
+[[example]]
+name = "greet"
+path = "examples/greet.rs"
+crate-type = ["cdylib"]
+```
+
+**3. Build code** — `crates/builder/src/mixins/greet.rs`. The `code` closure for
+a handler just loads the target-method arguments and calls the native method;
+the easiest path is to reuse the `emit_call_native` helper pattern from
+`minecraft_server.rs`:
+
+```rust
+use super::{JavaType, MixinAt, MixinClass, MixinMethod};
+
+pub struct GreetMixin;
+
+impl MixinClass for GreetMixin {
+    fn target_class(&self) -> &'static str { "net/minecraft/server/MinecraftServer" }
+    fn mixin_class_simple_name(&self) -> &'static str { "GreetMixin" }
+    fn native_lib_name(&self) -> &'static str { "greet" } // = the [[example]] name
+
+    fn methods(&self) -> &'static [MixinMethod] {
+        &[MixinMethod {
+            name: "onRun",
+            target_method: "runServer",
+            target_args: &[],          // &[JavaType::Object("…"), …] for non-empty signatures
+            at: MixinAt::Head,
+            cancellable: false,
+            exceptions: &["java/io/IOException"],
+            native_name: "greet",      // = the Rust #[inject] fn name
+            code: |mm, owner, c| emit_call_native(owner, c, mm.native_name, mm.target_args),
+        }]
+    }
+}
+```
+
+**4. Re-export** — `crates/builder/src/mixins/mod.rs`:
+
+```rust
+pub mod greet;
+pub use greet::GreetMixin;
+```
+
+**5. List in main** — `crates/builder/src/main.rs`:
+
+```rust
+const MIXINS: &[&dyn MixinClass] = &[&MinecraftServerMixin, &GreetMixin];
+```
+
+Multiple `@Inject` handlers on one Mixin are just more entries in `methods()` —
+`MinecraftServerMixin` ships four as a demo.
+
+## The `#[inject]` contract
+
+`#[inject_macro::inject]` takes no arguments. The annotated function:
+
+- may take zero or more arguments (forwarded from the JNI call), with an
+  **optional trailing `api::CallbackInfo`**; it must not take `self`, and
+  returns `()`.
+- has its parameter list mirror the Mixin handler descriptor: the target
+  method's `target_args` followed by `CallbackInfo`. Rust types use their JNI
+  representation (primitives as `jint`/`jlong`/…, objects as `jni::objects::JObject`).
+
+The macro exports `Java_com_izumi_runtime_NativePayloads_<jni-escaped-name>` and
+installs an `EnvGuard` before calling the body, so `api::println`,
+`CallbackInfo::cancel`, and friends can reach the current `JNIEnv` implicitly.
+`native_name` on the builder side equals the Rust function name (JNI escapes
+`_` to `_1`, etc.).
+
+`target_args` are described with the `JavaType` enum
+(`Int`, `Long`, `Object("java/util/function/BooleanSupplier")`, `Array("I")`, …),
+which drives the descriptor, slot sizes, and load opcodes on both sides — one
+source of truth, no duplication between cdylib and generated classes.
+
+## Runtime model
+
+- Each handler calls `NativeLoader.ensure_<lib>()` first. It resolves
+  `/native/<os>-<arch>/<mapLibraryName(lib)>` inside the jar, copies it to a
+  temp file (`deleteOnExit`), and `System.load`s it — guarded by a
+  `synchronized` method and a `loaded_<lib>` flag so it runs once.
+- `os.arch` is normalized (`amd64`→`x86_64`, `arm64`→`aarch64`) and `os.name`
+  mapped to `windows` / `macos` / `linux`.
+- Native methods live on `com/izumi/runtime/NativePayloads`, **not** on the
+  Mixin, so the JVM binds them to `Java_com_izumi_runtime_NativePayloads_<fn>`
+  as the JNI spec expects.
+
+## Current demo
+
+`crates/native-payloads/examples/minecraft_server.rs` exports four payloads,
+wired to `net/minecraft/server/MinecraftServer` by `MinecraftServerMixin`:
+
+| Payload       | Target / `@At`          | Behavior                                    |
+| ------------- | ----------------------- | ------------------------------------------- |
+| `hello`       | `runServer` HEAD        | prints on server start                      |
+| `goodbye`     | `runServer` RETURN      | prints on server stop                       |
+| `cancel_demo` | `runServer` HEAD (cancellable) | `CallbackInfo::cancel()` demo        |
+| `on_tick`     | `tickServer` HEAD       | prints every 100th tick (`BooleanSupplier` arg) |
+
+## Continuous integration
+
+`ci.yml` runs `fmt`, `clippy -D warnings`, `test`, `taplo`, and `cargo-machete`,
+then:
+
+- **`build-natives`** — a 6-way matrix (`ubuntu-latest`, `ubuntu-22.04-arm`,
+  `windows-latest`, `windows-11-arm`, `macos-15-intel`, `macos-latest`) builds a
+  cdylib per platform and uploads it as an artifact. No cross-compilation.
+- **`package`** — downloads all six artifacts and reruns `cargo run -p builder`
+  with `NATIVE_LIB_DIRS` covering every platform, producing one cross-platform
+  `out/izumi.jar`. It then writes a build report to the **job summary**
+  (`$GITHUB_STEP_SUMMARY`) and posts the **same** report to the pull request via
+  [`marocchino/sticky-pull-request-comment@v3`](https://github.com/marocchino/sticky-pull-request-comment).
+
+[`.github/dependabot.yml`](./.github/dependabot.yml) keeps `cargo` and
+`github-actions` dependencies up to date daily.
+
+## Roadmap
+
+- [ ] Shared **storage pool** persistence layer (Rust native)
+- [ ] Cross-server synchronization (network link or shared backend)
+- [ ] Mixin hooks for inventory / container operations
+- [ ] Conflict resolution (no item duplication across servers)
+- [ ] Player-facing surface (commands / status)
 
 ## License
 
-Choose one. Suggested: dual MIT / Apache-2.0.
+MIT (see `fabric.mod.json`). A top-level `LICENSE` file is still to be added.
 
 [`crustf`]: https://github.com/topi-banana/crustf
